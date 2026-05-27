@@ -2,7 +2,7 @@ name: 统一调度更新
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 每天 UTC 02:00，按仓库分组分散到7天
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       force_all:
@@ -21,23 +21,17 @@ jobs:
       - name: 获取组织仓库并按分组触发
         run: |
           FORCE_ALL="${{ github.event.inputs.force_all }}"
-          DAY=$(date -u +%u)   # 1=周一 ... 7=周日
-
+          DAY=$(date -u +%u)
           echo "今天：周${DAY}，force_all=${FORCE_ALL}"
 
-          # 获取所有公开仓库（按字母排序，排除 Dispatcher）
-          PAGE=1
+          # 获取所有公开仓库（排除 Dispatcher），按字母排序
           REPOS=()
+          PAGE=1
           while true; do
             BATCH=$(curl -sf \
               "https://api.github.com/orgs/TwitterArchiver/repos?type=public&per_page=100&page=${PAGE}" \
-              | python3 -c "
-import sys, json
-repos = [r['name'] for r in json.load(sys.stdin)
-         if r['name'] not in ('Dispatcher',)]
-repos.sort()
-print('\n'.join(repos))
-" 2>/dev/null || echo "")
+              -H "Authorization: token ${GH_TOKEN}" \
+              | jq -r '.[].name | select(. != "Dispatcher")' | sort)
             if [ -z "$BATCH" ]; then break; fi
             while IFS= read -r repo; do
               if [ -n "$repo" ]; then REPOS+=("$repo"); fi
@@ -67,10 +61,7 @@ print('\n'.join(repos))
                 echo "  ⚠️ ${REPO} 触发失败"
               TRIGGERED=$((TRIGGERED+1))
               DELAY=1
-            else
-              echo "  跳过 [周${REPO_DAY}组] ${REPO}"
             fi
           done
 
-          echo ""
           echo "本次触发 ${TRIGGERED}/${TOTAL} 个仓库"
