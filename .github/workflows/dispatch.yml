@@ -1,0 +1,76 @@
+name: 统一调度更新
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 每天 UTC 02:00，按仓库分组分散到7天
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: '强制触发所有仓库（忽略分组）'
+        required: false
+        default: 'false'
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+
+    steps:
+      - name: 获取组织仓库并按分组触发
+        run: |
+          FORCE_ALL="${{ github.event.inputs.force_all }}"
+          DAY=$(date -u +%u)   # 1=周一 ... 7=周日
+
+          echo "今天：周${DAY}，force_all=${FORCE_ALL}"
+
+          # 获取所有公开仓库（按字母排序，排除 Dispatcher）
+          PAGE=1
+          REPOS=()
+          while true; do
+            BATCH=$(curl -sf \
+              "https://api.github.com/orgs/TwitterArchiver/repos?type=public&per_page=100&page=${PAGE}" \
+              | python3 -c "
+import sys, json
+repos = [r['name'] for r in json.load(sys.stdin)
+         if r['name'] not in ('Dispatcher',)]
+repos.sort()
+print('\n'.join(repos))
+" 2>/dev/null || echo "")
+            if [ -z "$BATCH" ]; then break; fi
+            while IFS= read -r repo; do
+              if [ -n "$repo" ]; then REPOS+=("$repo"); fi
+            done <<< "$BATCH"
+            PAGE=$((PAGE+1))
+          done
+
+          TOTAL=${#REPOS[@]}
+          echo "共 ${TOTAL} 个存档仓库"
+
+          TRIGGERED=0
+          DELAY=0
+          for i in "${!REPOS[@]}"; do
+            REPO="${REPOS[$i]}"
+            REPO_DAY=$(( (i % 7) + 1 ))
+
+            if [ "$FORCE_ALL" = "true" ] || [ "$REPO_DAY" -eq "$DAY" ]; then
+              if [ "$DELAY" -gt 0 ]; then
+                echo "等待 60 秒..."
+                sleep 60
+              fi
+              echo "→ [周${REPO_DAY}组] 触发 TwitterArchiver/${REPO}"
+              echo '{"ref":"main"}' | \
+                gh api repos/TwitterArchiver/${REPO}/actions/workflows/update.yml/dispatches \
+                --method POST --input - 2>/dev/null && \
+                echo "  ✅ ${REPO}" || \
+                echo "  ⚠️ ${REPO} 触发失败"
+              TRIGGERED=$((TRIGGERED+1))
+              DELAY=1
+            else
+              echo "  跳过 [周${REPO_DAY}组] ${REPO}"
+            fi
+          done
+
+          echo ""
+          echo "本次触发 ${TRIGGERED}/${TOTAL} 个仓库"
