@@ -39,7 +39,7 @@ jobs:
           }
 
           gh repo list TwitterArchiver --limit 200 --json name \
-            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home")' \
+            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home" and . != "AnIncanescence")' \
             | sort | while IFS= read -r REPO; do
             if [ -z "$REPO" ]; then continue; fi
 
