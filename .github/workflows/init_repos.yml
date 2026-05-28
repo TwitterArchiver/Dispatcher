@@ -8,86 +8,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
-      BASE_URL: https://raw.githubusercontent.com/sjshb57/IncandescenceArchiver/main/.github/workflows
+      GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
 
     steps:
-      - name: 拉取最新三个 yml
+      - name: 拉取最新三个 yml 并推送到各仓库
         run: |
-          curl -fsSL "${BASE_URL}/setup.yml"     -o /tmp/setup.yml
-          curl -fsSL "${BASE_URL}/update.yml"    -o /tmp/update.yml
-          curl -fsSL "${BASE_URL}/retry_all.yml" -o /tmp/retry_all.yml
-          echo "✅ 三个 yml 已拉取"
-          wc -l /tmp/setup.yml /tmp/update.yml /tmp/retry_all.yml
+          BASE="https://raw.githubusercontent.com/sjshb57/IncandescenceArchiver/main/.github/workflows"
+          curl -fsSL "$BASE/setup.yml"     -o /tmp/setup.yml
+          curl -fsSL "$BASE/update.yml"    -o /tmp/update.yml
+          curl -fsSL "$BASE/retry_all.yml" -o /tmp/retry_all.yml
+          echo "三个 yml 拉取完成"
 
-      - name: 获取仓库列表
-        id: repos
-        run: |
-          REPOS=""
-          PAGE=1
-          while true; do
-            BATCH=$(curl -sf \
-              "https://api.github.com/orgs/TwitterArchiver/repos?type=public&per_page=100&page=${PAGE}" \
-              -H "Authorization: token ${GH_TOKEN}" \
-              | jq -r '.[].name | select(. != "Dispatcher")' | sort)
-            if [ -z "$BATCH" ]; then break; fi
-            REPOS="${REPOS}${BATCH}"$'\n'
-            PAGE=$((PAGE+1))
-          done
-          REPOS=$(echo "$REPOS" | grep -v '^$')
-          echo "找到 $(echo "$REPOS" | wc -l) 个仓库"
-          echo "list<<EOF" >> $GITHUB_OUTPUT
-          echo "$REPOS"    >> $GITHUB_OUTPUT
-          echo "EOF"       >> $GITHUB_OUTPUT
-
-      - name: 推送 yml 到各仓库
-        run: |
           push_file() {
-            local REPO="$1"
-            local FNAME="$2"
-            local LOCAL="$3"
-            local API="https://api.github.com/repos/TwitterArchiver/${REPO}/contents/.github/workflows/${FNAME}"
-
-            # 获取现有 sha（文件不存在时为空）
-            SHA=$(curl -sf -H "Authorization: token ${GH_TOKEN}" "$API" | jq -r '.sha // empty')
-
-            # base64 编码（不换行）
-            CONTENT=$(base64 -w 0 "$LOCAL")
-
-            # 构造 JSON payload
+            local REPO="$1" F="$2"
+            local API="repos/TwitterArchiver/$REPO/contents/.github/workflows/$F"
+            local SHA CONTENT
+            SHA=$(gh api "$API" --jq '.sha' 2>/dev/null || true)
+            CONTENT=$(base64 -w 0 "/tmp/$F")
             if [ -n "$SHA" ]; then
-              PAYLOAD=$(jq -n \
-                --arg msg "chore: 同步最新 ${FNAME} [skip ci]" \
-                --arg content "$CONTENT" \
-                --arg sha "$SHA" \
-                '{message:$msg, content:$content, sha:$sha}')
+              jq -n --arg m "sync $F [skip ci]" --arg c "$CONTENT" --arg s "$SHA" \
+                '{message:$m,content:$c,sha:$s}' | \
+                gh api "$API" --method PUT --input - > /dev/null 2>&1 \
+                && echo "  ✅ $F" || echo "  ❌ $F 失败"
             else
-              PAYLOAD=$(jq -n \
-                --arg msg "chore: 同步最新 ${FNAME} [skip ci]" \
-                --arg content "$CONTENT" \
-                '{message:$msg, content:$content}')
-            fi
-
-            STATUS=$(echo "$PAYLOAD" | curl -sf -o /dev/null -w "%{http_code}" \
-              -X PUT "$API" \
-              -H "Authorization: token ${GH_TOKEN}" \
-              -H "Content-Type: application/json" \
-              --data-binary @-)
-
-            if [ "$STATUS" = "200" ] || [ "$STATUS" = "201" ]; then
-              echo "    ✅ ${FNAME} (HTTP ${STATUS})"
-            else
-              echo "    ❌ ${FNAME} 失败 (HTTP ${STATUS})"
+              jq -n --arg m "sync $F [skip ci]" --arg c "$CONTENT" \
+                '{message:$m,content:$c}' | \
+                gh api "$API" --method PUT --input - > /dev/null 2>&1 \
+                && echo "  ✅ $F（新建）" || echo "  ❌ $F 失败"
             fi
           }
 
-          while IFS= read -r REPO; do
+          gh repo list TwitterArchiver --limit 200 --json name \
+            --jq '.[].name | select(. != "Dispatcher")' | sort | while IFS= read -r REPO; do
             if [ -z "$REPO" ]; then continue; fi
-            echo "→ ${REPO}"
-            push_file "$REPO" "setup.yml"     "/tmp/setup.yml"
-            push_file "$REPO" "update.yml"    "/tmp/update.yml"
-            push_file "$REPO" "retry_all.yml" "/tmp/retry_all.yml"
-            sleep 2
-          done <<< "${{ steps.repos.outputs.list }}"
 
+            HAS=$(gh api "repos/TwitterArchiver/$REPO/contents/.github/workflows/update.yml" \
+              --jq '.sha' 2>/dev/null || true)
+            if [ -z "$HAS" ]; then
+              echo "⏭️  $REPO（无 yml，跳过）"
+              continue
+            fi
+
+            echo "→ $REPO"
+            push_file "$REPO" setup.yml     &
+            push_file "$REPO" update.yml    &
+            push_file "$REPO" retry_all.yml &
+            wait
+            sleep 1
+          done
           echo "=== 全部完成 ==="
