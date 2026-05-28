@@ -39,7 +39,8 @@ jobs:
           }
 
           gh repo list TwitterArchiver --limit 200 --json name \
-            --jq '.[].name | select(. != "Dispatcher")' | sort | while IFS= read -r REPO; do
+            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home")' \
+            | sort | while IFS= read -r REPO; do
             if [ -z "$REPO" ]; then continue; fi
 
             HAS=$(gh api "repos/TwitterArchiver/$REPO/contents/.github/workflows/update.yml" \
@@ -50,10 +51,9 @@ jobs:
             fi
 
             echo "→ $REPO"
-            push_file "$REPO" setup.yml     &
-            push_file "$REPO" update.yml    &
-            push_file "$REPO" retry_all.yml &
-            wait
+            push_file "$REPO" setup.yml
+            push_file "$REPO" update.yml
+            push_file "$REPO" retry_all.yml
             sleep 1
           done
           echo "=== 全部完成 ==="
