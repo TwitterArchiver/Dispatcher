@@ -16,24 +16,24 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/sjshb57/Test/main/index.html" -o /tmp/index_template.html
           echo "index.html 模板拉取完成（$(wc -c < /tmp/index_template.html) 字节）"
 
-          # 推送函数：存在则更新（带 sha），不存在则新建
+          # 推送函数：用 --rawfile 从文件读 base64（避免大文件超出命令行参数上限）
           push_index() {
             local REPO="$1"
             local API="repos/TwitterArchiver/$REPO/contents/index.html"
-            local SHA CONTENT
+            local SHA
             SHA=$(gh api "$API" --jq '.sha' 2>/dev/null || true)
-            CONTENT=$(base64 -w 0 /tmp/index_repo.html)
+            base64 -w 0 /tmp/index_repo.html > /tmp/index_b64.txt
             if [ -n "$SHA" ]; then
-              jq -n --arg m "更新阅读器 index.html [skip ci]" --arg c "$CONTENT" --arg s "$SHA" \
-                '{message:$m,content:$c,sha:$s}' | \
-                gh api "$API" --method PUT --input - > /dev/null 2>&1 \
-                && echo "  ✅ index.html" || echo "  ❌ index.html 失败"
+              jq -n --arg m "更新阅读器 index.html [skip ci]" \
+                    --rawfile c /tmp/index_b64.txt --arg s "$SHA" \
+                '{message:$m, content:($c|rtrimstr("\n")), sha:$s}' > /tmp/payload.json
             else
-              jq -n --arg m "新增阅读器 index.html [skip ci]" --arg c "$CONTENT" \
-                '{message:$m,content:$c}' | \
-                gh api "$API" --method PUT --input - > /dev/null 2>&1 \
-                && echo "  ✅ index.html（新建）" || echo "  ❌ index.html 失败"
+              jq -n --arg m "新增阅读器 index.html [skip ci]" \
+                    --rawfile c /tmp/index_b64.txt \
+                '{message:$m, content:($c|rtrimstr("\n"))}' > /tmp/payload.json
             fi
+            gh api "$API" --method PUT --input /tmp/payload.json > /dev/null 2>&1 \
+              && echo "  ✅ index.html" || echo "  ❌ index.html 失败"
           }
 
           # 遍历存档仓库
