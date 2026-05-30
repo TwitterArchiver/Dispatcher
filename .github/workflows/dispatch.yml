@@ -1,12 +1,15 @@
-name: 统一调度更新
+name: 统一调度更新（指针轮转·每次3个）
 
 on:
   schedule:
+    # 每天 UTC 02:00 与 14:00 各跑一次（每天 2×3=6 个仓库）
+    # 仓库变多时，只需在这里多加几个时间点（如 '0 8 * * *'），无需改逻辑
     - cron: '0 2 * * *'
+    - cron: '0 14 * * *'
   workflow_dispatch:
     inputs:
       force_all:
-        description: '强制触发所有仓库（忽略分组）'
+        description: '强制触发所有仓库（忽略指针）'
         required: false
         default: 'false'
 
@@ -16,52 +19,75 @@ jobs:
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      # 指针存放仓库（本仓库）
+      STATE_REPO: TwitterArchiver/Dispatcher
+      # 每次触发的仓库数
+      BATCH: 3
 
     steps:
-      - name: 获取组织仓库并按分组触发
+      - name: 按指针轮转触发各仓库的 update.yml
         run: |
           FORCE_ALL="${{ github.event.inputs.force_all }}"
-          DAY=$(date -u +%u)
-          echo "今天：周${DAY}，force_all=${FORCE_ALL}"
 
-          # 获取所有公开仓库（排除 Dispatcher），按字母排序
+          # 1. 候选仓库：排除 Dispatcher / .github / home，字母序（稳定顺序）
+          CANDIDATES=$(gh repo list TwitterArchiver --limit 200 --json name \
+            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home")' \
+            | sort)
+
+          # 2. 仅保留真正有 update.yml 的仓库（可被触发），保证每次的“3个”都是有效触发
           REPOS=()
-          PAGE=1
-          while true; do
-            BATCH=$(curl -sf \
-              "https://api.github.com/orgs/TwitterArchiver/repos?type=public&per_page=100&page=${PAGE}" \
-              -H "Authorization: token ${GH_TOKEN}" \
-              | jq -r '.[].name | select(. != "Dispatcher")' | sort)
-            if [ -z "$BATCH" ]; then break; fi
-            while IFS= read -r repo; do
-              if [ -n "$repo" ]; then REPOS+=("$repo"); fi
-            done <<< "$BATCH"
-            PAGE=$((PAGE+1))
-          done
-
-          TOTAL=${#REPOS[@]}
-          echo "共 ${TOTAL} 个存档仓库"
-
-          TRIGGERED=0
-          DELAY=0
-          for i in "${!REPOS[@]}"; do
-            REPO="${REPOS[$i]}"
-            REPO_DAY=$(( (i % 7) + 1 ))
-
-            if [ "$FORCE_ALL" = "true" ] || [ "$REPO_DAY" -eq "$DAY" ]; then
-              if [ "$DELAY" -gt 0 ]; then
-                echo "等待 60 秒..."
-                sleep 60
-              fi
-              echo "→ [周${REPO_DAY}组] 触发 TwitterArchiver/${REPO}"
-              echo '{"ref":"main"}' | \
-                gh api repos/TwitterArchiver/${REPO}/actions/workflows/update.yml/dispatches \
-                --method POST --input - 2>/dev/null && \
-                echo "  ✅ ${REPO}" || \
-                echo "  ⚠️ ${REPO} 触发失败"
-              TRIGGERED=$((TRIGGERED+1))
-              DELAY=1
+          while IFS= read -r r; do
+            [ -z "$r" ] && continue
+            if gh api "repos/TwitterArchiver/$r/contents/.github/workflows/update.yml" \
+                 --jq '.sha' >/dev/null 2>&1; then
+              REPOS+=("$r")
             fi
+          done <<< "$CANDIDATES"
+
+          N=${#REPOS[@]}
+          echo "可触发仓库共 ${N} 个"
+          if [ "$N" -eq 0 ]; then echo "无可触发仓库"; exit 0; fi
+
+          trigger() {
+            local REPO="$1"
+            echo "→ 触发 TwitterArchiver/${REPO}"
+            echo '{"ref":"main"}' | \
+              gh api "repos/TwitterArchiver/${REPO}/actions/workflows/update.yml/dispatches" \
+              --method POST --input - 2>/dev/null \
+              && echo "  ✅ ${REPO}" || echo "  ⚠️ ${REPO} 触发失败"
+          }
+
+          # 3a. force_all：触发全部（指针不变）
+          if [ "$FORCE_ALL" = "true" ]; then
+            echo "=== 强制触发全部 ${N} 个 ==="
+            for REPO in "${REPOS[@]}"; do
+              trigger "$REPO"
+              sleep 60
+            done
+            echo "=== 完成（指针未改动）==="
+            exit 0
+          fi
+
+          # 3b. 正常：读指针，从指针起取 BATCH 个（绕回），触发后指针前移
+          PTR=$(gh api "repos/${STATE_REPO}/actions/variables/DISPATCH_PTR" \
+                  --jq '.value' 2>/dev/null || echo 0)
+          case "$PTR" in (*[!0-9]*|'') PTR=0 ;; esac
+          PTR=$(( PTR % N ))
+          echo "当前指针 PTR=${PTR}（共 ${N} 个，本次取 ${BATCH} 个）"
+
+          DELAY=0
+          for k in $(seq 0 $((BATCH-1))); do
+            idx=$(( (PTR + k) % N ))
+            REPO="${REPOS[$idx]}"
+            if [ "$DELAY" -gt 0 ]; then echo "等待 60 秒..."; sleep 60; fi
+            trigger "$REPO"
+            DELAY=1
           done
 
-          echo "本次触发 ${TRIGGERED}/${TOTAL} 个仓库"
+          # 4. 指针前移 BATCH，绕回；写回仓库变量
+          NEW_PTR=$(( (PTR + BATCH) % N ))
+          gh variable set DISPATCH_PTR --repo "${STATE_REPO}" --body "${NEW_PTR}" \
+            && echo "指针更新 ${PTR} → ${NEW_PTR}" \
+            || echo "⚠️ 指针写回失败（请确认 DISPATCH_TOKEN 有 variables 写权限）"
+
+          echo "=== 本次完成 ==="

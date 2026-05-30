@@ -1,0 +1,65 @@
+name: 初始化：推送阅读器 index.html 到各存档仓库（一次性运行）
+
+on:
+  workflow_dispatch:
+
+jobs:
+  push-readers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+    steps:
+      - name: 拉取最新 index.html 并推送到各仓库（含账号替换）
+        run: |
+          # 拉取阅读器模板（脚本宿主仓库）
+          curl -fsSL "https://raw.githubusercontent.com/sjshb57/Test/main/index.html" -o /tmp/index_template.html
+          echo "index.html 模板拉取完成（$(wc -c < /tmp/index_template.html) 字节）"
+
+          # 推送函数：存在则更新（带 sha），不存在则新建
+          push_index() {
+            local REPO="$1"
+            local API="repos/TwitterArchiver/$REPO/contents/index.html"
+            local SHA CONTENT
+            SHA=$(gh api "$API" --jq '.sha' 2>/dev/null || true)
+            CONTENT=$(base64 -w 0 /tmp/index_repo.html)
+            if [ -n "$SHA" ]; then
+              jq -n --arg m "更新阅读器 index.html [skip ci]" --arg c "$CONTENT" --arg s "$SHA" \
+                '{message:$m,content:$c,sha:$s}' | \
+                gh api "$API" --method PUT --input - > /dev/null 2>&1 \
+                && echo "  ✅ index.html" || echo "  ❌ index.html 失败"
+            else
+              jq -n --arg m "新增阅读器 index.html [skip ci]" --arg c "$CONTENT" \
+                '{message:$m,content:$c}' | \
+                gh api "$API" --method PUT --input - > /dev/null 2>&1 \
+                && echo "  ✅ index.html（新建）" || echo "  ❌ index.html 失败"
+            fi
+          }
+
+          # 遍历存档仓库
+          # 排除：Dispatcher / .github / home / AnIncanescence（多账号，HTML 手动维护）
+          gh repo list TwitterArchiver --limit 200 --json name \
+            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home" and . != "AnIncanescence")' \
+            | sort | while IFS= read -r REPO; do
+              if [ -z "$REPO" ]; then continue; fi
+              echo "→ $REPO"
+
+              # 扫描该仓库 accounts/ 目录拿真实账号（与 update.yml 一致：扫描目录，支持多账号）
+              ACCOUNTS=$(gh api "repos/TwitterArchiver/$REPO/contents/accounts" \
+                --jq '.[] | select(.type=="dir") | .name' 2>/dev/null | sort || true)
+              if [ -z "$ACCOUNTS" ]; then
+                echo "  ⏭️ 无 accounts 目录，跳过"
+                continue
+              fi
+
+              # 与 update.yml 完全相同的账号 JSON 生成（单引号）+ sed 替换（不带分号，.* 匹配）
+              ACCOUNTS_JSON=$(echo "$ACCOUNTS" | awk '{printf "'\''%s'\'', ", $0}' | sed "s/, $//")
+              echo "  账号: [${ACCOUNTS_JSON}]"
+              cp /tmp/index_template.html /tmp/index_repo.html
+              sed -i "s/const ACCOUNTS_HARDCODED = \[.*\]/const ACCOUNTS_HARDCODED = [${ACCOUNTS_JSON}]/" /tmp/index_repo.html
+
+              push_index "$REPO"
+              sleep 1
+            done
+
+          echo "=== 全部完成 ==="
