@@ -31,7 +31,7 @@ jobs:
 
           # 1. 候选仓库：排除 Dispatcher / .github / home，字母序（稳定顺序）
           CANDIDATES=$(gh repo list TwitterArchiver --limit 200 --json name \
-            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home")' \
+            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home" and . != "project-starter")' \
             | sort)
 
           # 2. 仅保留真正有 update.yml 的仓库（可被触发），保证每次的“3个”都是有效触发
