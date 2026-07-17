@@ -39,14 +39,15 @@ jobs:
           # 遍历存档仓库
           # 排除：Dispatcher / .github / home / AnIncanescence（多账号，HTML 手动维护）
           gh repo list TwitterArchiver --limit 200 --json name \
-            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home" and . != "AnIncanescence")' \
+            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home" and . != "AnIncanescence" and . != "project-starter")' \
             | sort | while IFS= read -r REPO; do
               if [ -z "$REPO" ]; then continue; fi
               echo "→ $REPO"
 
               # 扫描该仓库 accounts/ 目录拿真实账号（与 update.yml 一致：扫描目录，支持多账号）
               ACCOUNTS=$(gh api "repos/TwitterArchiver/$REPO/contents/accounts" \
-                --jq '.[] | select(.type=="dir") | .name' 2>/dev/null | sort || true)
+                --jq 'if type=="array" then (.[] | select(.type=="dir") | .name) else empty end' \
+                2>/dev/null | grep -E '^[A-Za-z0-9_.-]+$' | sort || true)
               if [ -z "$ACCOUNTS" ]; then
                 echo "  ⏭️ 无 accounts 目录，跳过"
                 continue
