@@ -22,7 +22,7 @@ jobs:
       # 指针存放仓库（本仓库）
       STATE_REPO: TwitterArchiver/Dispatcher
       # 每次触发的仓库数
-      BATCH: 3
+      BATCH: 7
 
     steps:
       - name: 按指针轮转触发各仓库的 update.yml
