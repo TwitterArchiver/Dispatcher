@@ -11,12 +11,18 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
 
     steps:
-      - name: 拉取最新三个 yml 并推送到各仓库
+      - name: 从 project-starter（私有）拉取三个 yml 并推送到各仓库
         run: |
-          BASE="https://raw.githubusercontent.com/sjshb57/IncandescenceArchiver/main/.github/workflows"
-          curl -fsSL "$BASE/setup.yml"     -o /tmp/setup.yml
-          curl -fsSL "$BASE/update.yml"    -o /tmp/update.yml
-          curl -fsSL "$BASE/retry_all.yml" -o /tmp/retry_all.yml
+          # project-starter 是私有仓库，用 gh api 拉取（raw URL 无法访问私有）
+          SRC="repos/TwitterArchiver/project-starter/contents/.github/workflows"
+          for F in setup.yml update.yml retry_all.yml; do
+            gh api "$SRC/$F" --jq '.content' | base64 -d > "/tmp/$F"
+            if [ -s "/tmp/$F" ]; then
+              echo "✅ 拉取 $F（$(wc -l < /tmp/$F) 行）"
+            else
+              echo "❌ 拉取 $F 失败"; exit 1
+            fi
+          done
           echo "三个 yml 拉取完成"
 
           push_file() {
@@ -39,7 +45,7 @@ jobs:
           }
 
           gh repo list TwitterArchiver --limit 200 --json name \
-            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home" and . != "AnIncanescence")' \
+            --jq '.[].name | select(. != "Dispatcher" and . != ".github" and . != "home" and . != "AnIncanescence" and . != "project-starter")' \
             | sort | while IFS= read -r REPO; do
             if [ -z "$REPO" ]; then continue; fi
 
